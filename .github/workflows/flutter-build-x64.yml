@@ -192,12 +192,11 @@ jobs:
           BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./SignOutput
 
       - name: Create Windows zip package
-        shell: bash
+        shell: pwsh
         run: |
           $zip = "xdesk-${{ env.VERSION }}-windows-x86_64.zip"
           if (Test-Path "SignOutput/$zip") { Remove-Item "SignOutput/$zip" -Force }
-           Compress-Archive -Path "SignOutput/xdesk-${{ env.VERSION }}-x86_64.*" -DestinationPath "SignOutput/$zip" -Force
-          cd ..
+          Compress-Archive -Path "SignOutput/xdesk-${{ env.VERSION }}-x86_64.*" -DestinationPath "SignOutput/$zip" -Force
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@master
