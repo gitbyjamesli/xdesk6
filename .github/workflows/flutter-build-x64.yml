@@ -194,8 +194,9 @@ jobs:
       - name: Create Windows zip package
         shell: bash
         run: |
-          cd SignOutput
-          zip -r xdesk-${{ env.VERSION }}-windows-x86_64.zip xdesk-${{ env.VERSION }}-x86_64.*
+          $zip = "xdesk-${{ env.VERSION }}-windows-x86_64.zip"
+          if (Test-Path "SignOutput/$zip") { Remove-Item "SignOutput/$zip" -Force }
+           Compress-Archive -Path "SignOutput/xdesk-${{ env.VERSION }}-x86_64.*" -DestinationPath "SignOutput/$zip" -Force
           cd ..
 
       - name: Upload Windows artifacts
