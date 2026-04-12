@@ -26,6 +26,8 @@ env:
   VERSION: "1.4.6"
   UPLOAD_ARTIFACT: "true"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
+  SCITER_RUST_VERSION: "1.75"
+  MAC_RUST_VERSION: "1.81"
 
 jobs:
   generate-bridge:
@@ -139,13 +141,68 @@ jobs:
           name: topmostwindow-artifacts
           path: "./xdesk"
 
-      - name: Publish artifacts
-        uses: softprops/action-gh-release@v1
+      - name: find Runner.res
+        continue-on-error: true
+        shell: bash
+        run: |
+          runner_res=$(find . -name "Runner.res");
+          if [ "$runner_res" == "" ]; then
+            echo "Runner.res: not found";
+          else
+            echo "Runner.res: $runner_res";
+            cp $runner_res ./libs/portable/Runner.res;
+            echo "list ./libs/portable/Runner.res";
+            ls -l ./libs/portable/Runner.res;
+          fi
+
+      - name: Sign xdesk files
+        if: env.SIGN_BASE_URL != '-2'
+        shell: bash
+        run: |
+          pip3 install requests argparse
+          BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./xdesk/
+
+      - name: Build self-extracted executable
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../xdesk/ -o . -e ../../xdesk/xdesk.exe
+          popd
+          mkdir -p ./SignOutput
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/xdesk-${{ env.VERSION }}-x86_64.exe
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build msi
+        run: |
+          pushd ./res/msi
+          python preprocess.py --arp --app-name xdesk -d ../../xdesk
+          nuget restore msi.sln
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
+          mv ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/xdesk-${{ env.VERSION }}-x86_64.msi
+          sha256sum ../../SignOutput/xdesk-*.msi
+
+      - name: Sign self-extracted file
+        if: env.SIGN_BASE_URL != '-2'
+        shell: bash
+        run: |
+          BASE_URL=${{ env.SIGN_BASE_URL }} SECRET_KEY=${{ secrets.SIGN_SECRET_KEY }} python3 res/job.py sign_files ./SignOutput
+
+      - name: Create Windows zip package
+        shell: bash
+        run: |
+          cd SignOutput
+          zip -r xdesk-${{ env.VERSION }}-windows-x86_64.zip xdesk-${{ env.VERSION }}-x86_64.*
+          cd ..
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@master
         with:
-          prerelease: true
-          tag_name: ${{ env.TAG_NAME }}
-          files: |
-            xdesk/**
+          name: xdesk-release-windows-x64
+          path: SignOutput/xdesk-${{ env.VERSION }}-windows-x86_64.zip
 
   build-for-linux-x64:
     name: Linux x86_64
@@ -253,16 +310,39 @@ jobs:
           mkdir -p output
           cp -r flutter/build/linux/x64/release/bundle/* output/
 
-      - name: Package artifacts
+      - name: Create Linux zip package
         run: |
           cd output
-          tar czf ../xdesk-${{ env.VERSION }}-linux-x64.tar.gz *
+          zip -r ../xdesk-${{ env.VERSION }}-linux-x86_64.zip *
           cd ..
 
-      - name: Publish artifacts
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@master
+        with:
+          name: xdesk-release-linux-x64
+          path: xdesk-${{ env.VERSION }}-linux-x86_64.zip
+
+  publish-release:
+    name: Publish Release
+    needs: [build-for-windows-x64, build-for-linux-x64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@master
+        with:
+          name: xdesk-release-windows-x64
+          path: ./
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@master
+        with:
+          name: xdesk-release-linux-x64
+          path: ./
+
+      - name: Publish to Release
         uses: softprops/action-gh-release@v1
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
-            xdesk-${{ env.VERSION }}-linux-x64.tar.gz
+            xdesk-${{ env.VERSION }}-*.zip
