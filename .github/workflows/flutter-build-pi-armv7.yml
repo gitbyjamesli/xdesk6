@@ -18,8 +18,12 @@ on:
 
 env:
   RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
   TAG_NAME: "${{ github.event.inputs.upload-tag || inputs.upload-tag || 'nightly' }}"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VERSION: "1.4.6"
+  UPLOAD_ARTIFACT: "true"
 
 jobs:
   generate-bridge:
@@ -57,9 +61,57 @@ jobs:
         run: |
           sudo apt-get -y update
           sudo apt-get install -y \
+             clang \
+             cmake \
              curl \
+             gcc \
              git \
+             g++ \
+             build-essential \
+             crossbuild-essential-armhf \
+             gcc-arm-linux-gnueabihf \
+             g++-arm-linux-gnueabihf \
+             libpam0g-dev:armhf \
+             libasound2-dev:armhf \
+             libunwind-dev:armhf \
+             libgstreamer1.0-dev:armhf \
+             libgstreamer-plugins-base1.0-dev:armhf \
+             libgtk-3-dev:armhf \
+             libpulse-dev:armhf \
+             libva-dev:armhf \
+             libvdpau-dev:armhf \
+             libxcb-randr0-dev:armhf \
+             libxcb-shape0-dev:armhf \
+             libxcb-xfixes0-dev:armhf \
+             libxdo-dev:armhf \
+             libxfixes-dev:armhf \
+             nasm \
              wget
+          # Add armhf architecture support
+          sudo dpkg --add-architecture armhf
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies for armv7
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --triplet arm-linux-gnueabihf \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
 
       - name: Install Rust toolchain for armv7
         uses: dtolnay/rust-toolchain@v1
@@ -80,62 +132,61 @@ jobs:
 
       - name: Install cross for armv7 compilation
         run: |
-          cargo install cross --git https://github.com/cross-rs/cross
+          cargo install cross
+          # Create .cargo/config.toml for cross-compilation
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [build]
+          target = "armv7-unknown-linux-gnueabihf"
+          
+          [target.armv7-unknown-linux-gnueabihf]
+          linker = "arm-linux-gnueabihf-gcc"
+          ar = "arm-linux-gnueabihf-ar"
+          EOF
 
-      - name: Build xdesk core for armv7 with cross
+      - name: Build xdesk for armv7
         run: |
-          # Build only the core library without Flutter for armv7
-          cross build --features hwcodec --release --target armv7-unknown-linux-gnueabihf --lib
+          export PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+          export CC=arm-linux-gnueabihf-gcc
+          export CXX=arm-linux-gnueabihf-g++
+          export AR=arm-linux-gnueabihf-ar
+          export RUSTFLAGS="-C linker=arm-linux-gnueabihf-gcc"
+          
+          cargo build --features flutter,hwcodec --release --target armv7-unknown-linux-gnueabihf
           
           mkdir -p output
-          # Copy the compiled library
-          if [ -f target/armv7-unknown-linux-gnueabihf/release/liblibrustdesk.so ]; then
-            cp target/armv7-unknown-linux-gnueabihf/release/liblibrustdesk.so output/
-          fi
+          # Copy the compiled binary
+          cp target/armv7-unknown-linux-gnueabihf/release/librustdesk.so output/ || true
 
       - name: Create armv7 zip package
         run: |
-          # Create a complete output directory for Raspberry Pi
+          # Create a more complete output directory for Raspberry Pi
           mkdir -p rpi_release
           
           # Copy binary and necessary files
-          if [ -f output/liblibrustdesk.so ]; then
-            cp output/liblibrustdesk.so rpi_release/
+          if [ -f output/librustdesk.so ]; then
+            cp output/librustdesk.so rpi_release/
           fi
           
           # Create README for Raspberry Pi users
           cat > rpi_release/README.md << 'EOF'
-          # xdesk Core Library for Raspberry Pi (armv7)
+          # xdesk for Raspberry Pi (armv7)
           
-          This build contains the core xdesk library compiled for Raspberry Pi with 32-bit ARM (armv7l) architecture.
+          This build is optimized for Raspberry Pi with 32-bit ARM (armv7l) architecture.
           
           ## Compatibility
           - Raspberry Pi 2, 3, 4 (with 32-bit OS)
           - Linux ARM with armv7l (ARMv7 32-bit)
-          - Kernel: 4.19.66-v7+ and later
-          
-          ## Files Included
-          - `liblibrustdesk.so` - Core xdesk library compiled for armv7l
-          
-          ## System Requirements
-          - ARM 32-bit OS (armv7l)
-          - glibc 2.38 or compatible
-          - OpenGL ES 2.0 or later (for UI rendering)
-          
-          ## Build Information
-          - Built with: Rust 1.75
-          - Target: armv7-unknown-linux-gnueabihf
-          - Features: hwcodec (hardware codec support)
-          - Date: ${{ env.VERSION }}
           
           ## Installation
           1. Extract this archive on your Raspberry Pi
-          2. Place `liblibrustdesk.so` in the appropriate library path
-          3. Follow standard xdesk installation procedures for your distribution
+          2. Copy the librustdesk.so to the appropriate location
+          3. Run the application following standard installation procedures
           
-          ## Note
-          For Flutter UI support on Raspberry Pi, please refer to Flutter's armv7l build instructions:
-          https://github.com/flutter/flutter/wiki/User-FAQ#can-i-use-flutter-to-build-apps-for-raspberry-pi
+          ## System Info
+          - Kernel version: 4.19.66-v7+
+          - Architecture: armv7l
+          - Compiled with: Rust 1.75
           
           EOF
           
