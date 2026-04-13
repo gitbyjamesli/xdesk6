@@ -17,7 +17,11 @@ on:
         default: 'nightly'
 
 env:
+<<<<<<< HEAD
   RUST_VERSION: "1.88.0"
+=======
+  RUST_VERSION: "1.85.0"
+>>>>>>> 9d10a510a4cdd17ea39f5ba50c640031aecef009
   TAG_NAME: "${{ github.event.inputs.upload-tag || inputs.upload-tag || 'nightly' }}"
   VERSION: "1.4.6"
 
