@@ -1,0 +1,170 @@
+name: Build xdesk armv7 (Raspberry Pi)
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifact:
+        type: boolean
+        default: true
+      upload-tag:
+        type: string
+        default: "nightly"
+  workflow_dispatch:
+    inputs:
+      upload-tag:
+        description: 'Release tag'
+        required: true
+        default: 'nightly'
+
+env:
+  RUST_VERSION: "1.75"
+  TAG_NAME: "${{ github.event.inputs.upload-tag || inputs.upload-tag || 'nightly' }}"
+  VERSION: "1.4.6"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-for-linux-armv7:
+    name: Linux armv7 (Raspberry Pi)
+    needs: [generate-bridge]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install prerequisites for armv7
+        run: |
+          sudo apt-get -y update
+          sudo apt-get install -y \
+             curl \
+             git \
+             wget
+
+      - name: Install Rust toolchain for armv7
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: armv7-unknown-linux-gnueabihf
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ubuntu-24.04-armv7
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install cross for armv7 compilation
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build xdesk core for armv7 with cross
+        run: |
+          # Build only the core library without Flutter for armv7
+          cross build --features hwcodec --release --target armv7-unknown-linux-gnueabihf --lib
+          
+          mkdir -p output
+          # Copy the compiled library
+          if [ -f target/armv7-unknown-linux-gnueabihf/release/liblibrustdesk.so ]; then
+            cp target/armv7-unknown-linux-gnueabihf/release/liblibrustdesk.so output/
+          fi
+
+      - name: Create armv7 zip package
+        run: |
+          # Create a complete output directory for Raspberry Pi
+          mkdir -p rpi_release
+          
+          # Copy binary and necessary files
+          if [ -f output/liblibrustdesk.so ]; then
+            cp output/liblibrustdesk.so rpi_release/
+          fi
+          
+          # Create README for Raspberry Pi users
+          cat > rpi_release/README.md << 'EOF'
+          # xdesk Core Library for Raspberry Pi (armv7)
+          
+          This build contains the core xdesk library compiled for Raspberry Pi with 32-bit ARM (armv7l) architecture.
+          
+          ## Compatibility
+          - Raspberry Pi 2, 3, 4 (with 32-bit OS)
+          - Linux ARM with armv7l (ARMv7 32-bit)
+          - Kernel: 4.19.66-v7+ and later
+          
+          ## Files Included
+          - `liblibrustdesk.so` - Core xdesk library compiled for armv7l
+          
+          ## System Requirements
+          - ARM 32-bit OS (armv7l)
+          - glibc 2.38 or compatible
+          - OpenGL ES 2.0 or later (for UI rendering)
+          
+          ## Build Information
+          - Built with: Rust 1.75
+          - Target: armv7-unknown-linux-gnueabihf
+          - Features: hwcodec (hardware codec support)
+          - Date: ${{ env.VERSION }}
+          
+          ## Installation
+          1. Extract this archive on your Raspberry Pi
+          2. Place `liblibrustdesk.so` in the appropriate library path
+          3. Follow standard xdesk installation procedures for your distribution
+          
+          ## Note
+          For Flutter UI support on Raspberry Pi, please refer to Flutter's armv7l build instructions:
+          https://github.com/flutter/flutter/wiki/User-FAQ#can-i-use-flutter-to-build-apps-for-raspberry-pi
+          
+          EOF
+          
+          cd rpi_release
+          zip -r ../xdesk-${{ env.VERSION }}-linux-armv7.zip *
+          cd ..
+
+      - name: Upload armv7 artifacts
+        uses: actions/upload-artifact@master
+        with:
+          name: xdesk-release-linux-armv7
+          path: xdesk-${{ env.VERSION }}-linux-armv7.zip
+
+  publish-release:
+    name: Publish armv7 Release
+    needs: [build-for-linux-armv7]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call' }}
+    steps:
+      - name: Download armv7 artifacts
+        uses: actions/download-artifact@master
+        with:
+          name: xdesk-release-linux-armv7
+          path: ./
+
+      - name: Publish to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            xdesk-${{ env.VERSION }}-*.zip
