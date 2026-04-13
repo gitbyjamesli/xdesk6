@@ -1,0 +1,221 @@
+name: Build xdesk armv7 (Raspberry Pi)
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifact:
+        type: boolean
+        default: true
+      upload-tag:
+        type: string
+        default: "nightly"
+  workflow_dispatch:
+    inputs:
+      upload-tag:
+        description: 'Release tag'
+        required: true
+        default: 'nightly'
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  TAG_NAME: "${{ github.event.inputs.upload-tag || inputs.upload-tag || 'nightly' }}"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VERSION: "1.4.6"
+  UPLOAD_ARTIFACT: "true"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-for-linux-armv7:
+    name: Linux armv7 (Raspberry Pi)
+    needs: [generate-bridge]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install prerequisites for armv7
+        run: |
+          sudo apt-get -y update
+          sudo apt-get install -y \
+             clang \
+             cmake \
+             curl \
+             gcc \
+             git \
+             g++ \
+             build-essential \
+             crossbuild-essential-armhf \
+             gcc-arm-linux-gnueabihf \
+             g++-arm-linux-gnueabihf \
+             libpam0g-dev:armhf \
+             libasound2-dev:armhf \
+             libunwind-dev:armhf \
+             libgstreamer1.0-dev:armhf \
+             libgstreamer-plugins-base1.0-dev:armhf \
+             libgtk-3-dev:armhf \
+             libpulse-dev:armhf \
+             libva-dev:armhf \
+             libvdpau-dev:armhf \
+             libxcb-randr0-dev:armhf \
+             libxcb-shape0-dev:armhf \
+             libxcb-xfixes0-dev:armhf \
+             libxdo-dev:armhf \
+             libxfixes-dev:armhf \
+             nasm \
+             wget
+          # Add armhf architecture support
+          sudo dpkg --add-architecture armhf
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies for armv7
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --triplet arm-linux-gnueabihf \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+
+      - name: Install Rust toolchain for armv7
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: armv7-unknown-linux-gnueabihf
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ubuntu-24.04-armv7
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install cross for armv7 compilation
+        run: |
+          cargo install cross
+          # Create .cargo/config.toml for cross-compilation
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [build]
+          target = "armv7-unknown-linux-gnueabihf"
+          
+          [target.armv7-unknown-linux-gnueabihf]
+          linker = "arm-linux-gnueabihf-gcc"
+          ar = "arm-linux-gnueabihf-ar"
+          EOF
+
+      - name: Build xdesk for armv7
+        run: |
+          export PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+          export CC=arm-linux-gnueabihf-gcc
+          export CXX=arm-linux-gnueabihf-g++
+          export AR=arm-linux-gnueabihf-ar
+          export RUSTFLAGS="-C linker=arm-linux-gnueabihf-gcc"
+          
+          cargo build --features flutter,hwcodec --release --target armv7-unknown-linux-gnueabihf
+          
+          mkdir -p output
+          # Copy the compiled binary
+          cp target/armv7-unknown-linux-gnueabihf/release/librustdesk.so output/ || true
+
+      - name: Create armv7 zip package
+        run: |
+          # Create a more complete output directory for Raspberry Pi
+          mkdir -p rpi_release
+          
+          # Copy binary and necessary files
+          if [ -f output/librustdesk.so ]; then
+            cp output/librustdesk.so rpi_release/
+          fi
+          
+          # Create README for Raspberry Pi users
+          cat > rpi_release/README.md << 'EOF'
+          # xdesk for Raspberry Pi (armv7)
+          
+          This build is optimized for Raspberry Pi with 32-bit ARM (armv7l) architecture.
+          
+          ## Compatibility
+          - Raspberry Pi 2, 3, 4 (with 32-bit OS)
+          - Linux ARM with armv7l (ARMv7 32-bit)
+          
+          ## Installation
+          1. Extract this archive on your Raspberry Pi
+          2. Copy the librustdesk.so to the appropriate location
+          3. Run the application following standard installation procedures
+          
+          ## System Info
+          - Kernel version: 4.19.66-v7+
+          - Architecture: armv7l
+          - Compiled with: Rust 1.75
+          
+          EOF
+          
+          cd rpi_release
+          zip -r ../xdesk-${{ env.VERSION }}-linux-armv7.zip *
+          cd ..
+
+      - name: Upload armv7 artifacts
+        uses: actions/upload-artifact@master
+        with:
+          name: xdesk-release-linux-armv7
+          path: xdesk-${{ env.VERSION }}-linux-armv7.zip
+
+  publish-release:
+    name: Publish armv7 Release
+    needs: [build-for-linux-armv7]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call' }}
+    steps:
+      - name: Download armv7 artifacts
+        uses: actions/download-artifact@master
+        with:
+          name: xdesk-release-linux-armv7
+          path: ./
+
+      - name: Publish to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            xdesk-${{ env.VERSION }}-*.zip
