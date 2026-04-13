@@ -78,19 +78,38 @@ jobs:
           name: bridge-artifact
           path: ./
 
-      - name: Install cross for armv7 compilation
+      - name: Install cross and configure for armv7 compilation
         run: |
           cargo install cross --git https://github.com/cross-rs/cross
+          
+          # Create Cross.toml to install glib dependencies inside cross container
+          mkdir -p .cargo
+          cat > Cross.toml << 'EOF'
+          [target.armv7-unknown-linux-gnueabihf]
+          pre-build = [
+              "apt-get update && apt-get install -y libglib2.0-0 libglib2.0-dev pkg-config || true"
+          ]
+          EOF
 
       - name: Build xdesk core for armv7 with cross
         run: |
-          # Build only the core library without Flutter for armv7
-          cross build --features hwcodec --release --target armv7-unknown-linux-gnueabihf --lib
+          # Build the core library for armv7
+          # The Cross.toml configuration will install required system dependencies
+          RUSTFLAGS="-C debuginfo=0" cross build --release --target armv7-unknown-linux-gnueabihf --lib
           
           mkdir -p output
-          # Copy the compiled library
-          if [ -f target/armv7-unknown-linux-gnueabihf/release/liblibrustdesk.so ]; then
-            cp target/armv7-unknown-linux-gnueabihf/release/liblibrustdesk.so output/
+          # Copy compiled libraries
+          find target/armv7-unknown-linux-gnueabihf/release -maxdepth 1 -name "*.so" -type f -exec cp {} output/ \;
+          
+          if [ -f output/liblibrustdesk.so ]; then
+              echo "✓ Successfully compiled librustdesk.so for armv7"
+              ls -lh output/
+          else
+              echo "✗ Warning: librustdesk.so not found"
+              echo "Available files in output:"
+              ls -lh output/ || echo "Output directory is empty"
+              echo "Available .so files found:"
+              find target/armv7-unknown-linux-gnueabihf/release -name "*.so*" -type f 2>/dev/null | sort
           fi
 
       - name: Create armv7 zip package
